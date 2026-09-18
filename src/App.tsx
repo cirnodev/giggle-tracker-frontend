@@ -1,12 +1,14 @@
 import { useCallback, useState } from 'react'
-import { NavLink, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import type { LeaderboardEntry, Post, Profile } from './api'
 import { api } from './api'
 import './App.css'
 import { formatAmount, formatDate, formatNumber, formatSigned, isUuid } from './lib/format'
 import { useApiResource } from './hooks/useApiResource'
+import { RouteErrorBoundary } from './components/RouteErrorBoundary'
 
 function App() {
+  const location = useLocation()
   return (
     <div className="app-shell">
       <header className="site-header">
@@ -21,6 +23,7 @@ function App() {
         </nav>
       </header>
       <main>
+        <RouteErrorBoundary key={location.pathname + location.search}>
         <Routes>
           <Route path="/" element={<Navigate to="/leaderboard?period=1d" replace />} />
           <Route path="/leaderboard" element={<LeaderboardPage />} />
@@ -28,6 +31,7 @@ function App() {
           <Route path="/post/:postId?" element={<PostPage />} />
           <Route path="*" element={<Navigate to="/leaderboard?period=1d" replace />} />
         </Routes>
+        </RouteErrorBoundary>
       </main>
     </div>
   )
@@ -49,14 +53,14 @@ function LeaderboardPage() {
           <p className="lede">A live scorecard for the accounts changing the most right now.</p>
         </div>
         <div className="period-control" aria-label="Leaderboard period">
-          <button className={period === '1d' ? 'selected' : ''} type="button" onClick={() => setPeriod('1d')}>Daily</button>
-          <button className={period === '1w' ? 'selected' : ''} type="button" onClick={() => setPeriod('1w')}>Weekly</button>
+          <button className={period === '1d' ? 'selected' : ''} aria-pressed={period === '1d'} type="button" onClick={() => setPeriod('1d')}>Daily</button>
+          <button className={period === '1w' ? 'selected' : ''} aria-pressed={period === '1w'} type="button" onClick={() => setPeriod('1w')}>Weekly</button>
         </div>
       </div>
 
-      <ResourceMeta lastUpdated={resource.lastUpdated} onRefresh={resource.refresh} loading={resource.loading} />
+      <ResourceMeta lastUpdated={resource.lastUpdated} onRefresh={resource.refresh} loading={resource.loading} retryInSeconds={resource.retryInSeconds} />
       {resource.error && <ErrorNotice message={resource.error} />}
-      {resource.loading && !resource.data ? <LoadingRows /> : <Leaderboard entries={resource.data?.entries ?? []} />}
+      {resource.loading && !resource.data ? <LoadingRows /> : resource.data ? <Leaderboard entries={resource.data.entries} /> : null}
     </section>
   )
 }
@@ -72,16 +76,16 @@ function Leaderboard({ entries }: { entries: LeaderboardEntry[] }) {
 }
 
 function LeaderboardRow({ entry }: { entry: LeaderboardEntry }) {
-  const changeClass = (entry.delta ?? 0) >= 0 ? 'positive' : 'negative'
+  const changeClass = entry.percentChange == null || entry.percentChange === 0 ? 'neutral' : entry.percentChange > 0 ? 'positive' : 'negative'
   return (
     <NavLink className="leaderboard-row" to={`/profile/${entry.userId}`}>
-      <span className="rank">{formatNumber(entry.rank)}</span>
+      <span className="rank"><span className="sr-only">Rank </span>{formatNumber(entry.rank)}</span>
       <span className="account-cell">
         <Avatar src={entry.photoUrl} name={entry.username ?? entry.displayName ?? 'Unknown'} />
-        <span><strong>{entry.displayName || entry.username || 'Unknown account'} {entry.verifiedGold ? <b className="gold-check">●</b> : entry.verified ? <b className="verified-check">✓</b> : null}</strong><small>@{entry.username || 'unknown'}</small></span>
+        <span className="account-text"><span className="sr-only">Account </span><strong>{entry.displayName || entry.username || 'Unknown account'} {entry.verifiedGold ? <b className="gold-check" aria-label="Gold verified">●</b> : entry.verified ? <b className="verified-check" aria-label="Verified">✓</b> : null}</strong><small>@{entry.username || 'unknown'}</small></span>
       </span>
-      <span className="amount">{formatAmount(entry.networth)}</span>
-      <span className={`change ${changeClass}`}>{formatSigned(entry.percentChange, '%')}</span>
+      <span className="amount"><span className="sr-only">Net worth </span>{formatAmount(entry.networth)}</span>
+      <span className={`change ${changeClass}`}><span className="sr-only">Change </span>{formatSigned(entry.percentChange, '%')}</span>
     </NavLink>
   )
 }
@@ -113,7 +117,7 @@ function ProfilePageContent({ userId }: { userId?: string }) {
       <LookupForm label="Profile UUID" input={input} setInput={setInput} error={inputError || (userId && !validId ? 'That profile UUID is not valid.' : '')} onSubmit={submit} />
       {validId && (
         <>
-          <ResourceMeta lastUpdated={resource.lastUpdated} onRefresh={resource.refresh} loading={resource.loading} />
+          <ResourceMeta lastUpdated={resource.lastUpdated} onRefresh={resource.refresh} loading={resource.loading} retryInSeconds={resource.retryInSeconds} />
           {resource.error && <ErrorNotice message={resource.error} />}
           {resource.loading && !resource.data ? <LoadingPanel /> : resource.data ? <ProfileDetails profile={resource.data} /> : null}
         </>
@@ -149,7 +153,7 @@ function PostPageContent({ postId }: { postId?: string }) {
       <LookupForm label="Post UUID" input={input} setInput={setInput} error={inputError || (postId && !validId ? 'That post UUID is not valid.' : '')} onSubmit={submit} />
       {validId && (
         <>
-          <ResourceMeta lastUpdated={resource.lastUpdated} onRefresh={resource.refresh} loading={resource.loading} />
+          <ResourceMeta lastUpdated={resource.lastUpdated} onRefresh={resource.refresh} loading={resource.loading} retryInSeconds={resource.retryInSeconds} />
           {resource.error && <ErrorNotice message={resource.error} />}
           {resource.loading && !resource.data ? <LoadingPanel /> : resource.data ? <PostDetails post={resource.data} /> : null}
         </>
@@ -168,16 +172,17 @@ function ProfileDetails({ profile }: { profile: Profile }) {
 }
 
 function PostDetails({ post }: { post: Post }) {
-  const media = post.thumbnailUrl || post.media
-  return <div className="detail-content"><section className="post-overview surface"><div className="post-preview">{media ? post.isPhoto ? <img src={media} alt="Post media" /> : <video controls preload="metadata" poster={post.thumbnailUrl || undefined} src={post.media || undefined} /> : <span>Post media unavailable</span>}</div><div className="post-copy"><p className="kicker">@{post.username || 'unknown'}</p><h2>{post.description || 'No post description'}</h2><p>{post.hashtag ? `#${post.hashtag}` : 'No hashtag'} · Posted {formatDate(post.createdAt)}</p></div></section><MetricGrid title="Engagement" metrics={[['Views', formatNumber(post.counts.views)], ['Likes', formatNumber(post.counts.likes)], ['Comments', formatNumber(post.counts.comments)], ['Shares', formatNumber(post.counts.shares)], ['Bookmarks', formatNumber(post.counts.bookmarks)]]} /><MetricGrid title="Market activity" metrics={[['Token supply', formatAmount(post.market.tokenSupply)], ['Volume', formatAmount(post.market.volume)], ['Market pot', formatAmount(post.market.pot)], ['Holders', formatNumber(post.market.holders)], ['Trades', formatNumber(post.market.trades)], ['Top investors', formatNumber(post.topInvestors?.length ?? post.investorCount)]]} /></div>
+  const media = post.media || post.thumbnailUrl || post.carouselMedia?.[0]
+  const isPhoto = post.isPhoto || (!post.media && Boolean(post.carouselMedia?.length))
+  return <div className="detail-content"><section className="post-overview surface"><div className="post-preview">{media ? isPhoto ? <img src={media} alt="Post media" /> : <video controls preload="metadata" poster={post.thumbnailUrl || undefined} src={post.media || undefined} /> : <span>Post media unavailable</span>}</div><div className="post-copy"><p className="kicker">@{post.username || 'unknown'}</p><h2>{post.description || 'No post description'}</h2><p>{post.hashtag ? `#${post.hashtag}` : 'No hashtag'} · Posted {formatDate(post.createdAt)}</p></div></section><MetricGrid title="Engagement" metrics={[['Views', formatNumber(post.counts.views)], ['Likes', formatNumber(post.counts.likes)], ['Comments', formatNumber(post.counts.comments)], ['Shares', formatNumber(post.counts.shares)], ['Bookmarks', formatNumber(post.counts.bookmarks)]]} /><MetricGrid title="Market activity" metrics={[['Token supply', formatAmount(post.market.tokenSupply)], ['Volume', formatAmount(post.market.volume)], ['Market pot', formatAmount(post.market.pot)], ['Holders', formatNumber(post.market.holders)], ['Trades', formatNumber(post.market.trades)], ['Investors', formatNumber(post.investorCount)]]} /></div>
 }
 
 function MetricGrid({ title, metrics }: { title: string; metrics: [string, string][] }) {
   return <section className="metric-section"><h2>{title}</h2><dl className="metric-grid">{metrics.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></section>
 }
 
-function ResourceMeta({ lastUpdated, onRefresh, loading }: { lastUpdated: Date | null; onRefresh: () => void; loading: boolean }) {
-  return <div className="resource-meta"><span>{lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}` : 'Waiting for live data'}</span><button className="refresh-button" type="button" onClick={onRefresh} disabled={loading}>{loading ? 'Updating…' : 'Refresh'}</button></div>
+function ResourceMeta({ lastUpdated, onRefresh, loading, retryInSeconds }: { lastUpdated: Date | null; onRefresh: () => void; loading: boolean; retryInSeconds: number }) {
+  return <div className="resource-meta"><span>{lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}` : 'Waiting for live data'}</span><button className="refresh-button" type="button" onClick={onRefresh} disabled={loading || retryInSeconds > 0}>{loading ? 'Updating…' : retryInSeconds > 0 ? `Retry in ${retryInSeconds}s` : 'Refresh'}</button></div>
 }
 
 function ErrorNotice({ message }: { message: string }) { return <p className="error-notice" role="alert">{message}</p> }
@@ -186,8 +191,9 @@ function LoadingPanel() { return <section className="loading-panel surface" aria
 function LoadingRows() { return <section className="loading-rows" aria-label="Loading leaderboard">{Array.from({ length: 7 }, (_, index) => <div className="loading-row" key={index}><span /><span /><span /></div>)}</section> }
 
 function Avatar({ src, name, large = false }: { src: string | null; name: string; large?: boolean }) {
+  const [failedSrc, setFailedSrc] = useState<string | null>(null)
   const initial = name.slice(0, 1).toUpperCase()
-  return <span className={`avatar ${large ? 'avatar-large' : ''}`}>{src ? <img src={src} alt="" /> : initial}</span>
+  return <span className={`avatar ${large ? 'avatar-large' : ''}`} aria-hidden="true">{src && src !== failedSrc ? <img src={src} alt="" onError={() => setFailedSrc(src)} /> : initial}</span>
 }
 
 export default App
